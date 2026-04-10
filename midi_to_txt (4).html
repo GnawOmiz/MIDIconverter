@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MIDI to TXT Converter</title>
+</head>
+<body>
+
+<h1>MIDI <span>→</span> TXT</h1>
+<p class="subtitle">Converts a MIDI file into three synced text files</p>
+
+<div class="card">
+  <div class="drop-zone" id="dropZone">
+    <input type="file" id="midiInput" accept=".mid,.midi">
+    <span class="drop-icon">🎵</span>
+    <div class="drop-label"><strong>Drop a MIDI file</strong> or click to browse</div>
+    <div class="file-name" id="fileName">No file selected</div>
+  </div>
+
+  <button class="btn btn-convert" id="convertBtn" onclick="convert()" disabled>Convert</button>
+
+  <div class="downloads">
+    <button class="btn btn-download" id="dlNotes"       onclick="download('notes')"       disabled>⬇ notes.txt</button>
+    <button class="btn btn-download" id="dlInstruments" onclick="download('instruments')" disabled>⬇ instruments.txt</button>
+    <button class="btn btn-download" id="dlDrumLetters" onclick="download('drumLetters')" disabled>⬇ drum_letters.txt</button>
+    <button class="btn btn-download" id="dlDrumTimes"   onclick="download('drumTimes')"   disabled>⬇ drum_times.txt</button>
+  </div>
+
+  <div class="status">
+    <div class="dot" id="dot"></div>
+    <span id="statusMsg">Waiting for a MIDI file…</span>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.min.js"></script>
+<script>
+
+// ── Your 21 instruments, numbered 1-21, mapped to letters A-U ────────────────
+// 1=Piano=A, 2=Electric Piano=B, 3=Organ=C, 4=Guitar=D, 5=Electric Guitar=E,
+// 6=Bass=F, 7=Pizzicato=G, 8=Cello=H, 9=Trombone=I, 10=Clarinet=J,
+// 11=Saxophone=K, 12=Flute=L, 13=Bassoon=M, 14=(unused), 15=Choir=O,
+// 16=Vibraphone=P, 17=Music Box=Q, 18=Steel Drum=R, 19=Marimba=S,
+// 20=Synth Lead=T, 21=Synth Pad=U
+const INST_LETTER = {
+  1:"A", 2:"B", 3:"C", 4:"D", 5:"E", 6:"F", 7:"G", 8:"H", 9:"I", 10:"J",
+  11:"K", 12:"L", 13:"M", 15:"O", 16:"P", 17:"Q", 18:"R", 19:"S", 20:"T", 21:"U"
+};
+
+// General MIDI program (1-128) → your instrument number (1-21)
+const MIDI_PROGRAM_MAP = {
+  1:1,2:1,3:1,   // Acoustic/Bright/Electric Grand Piano → Piano
+  4:2,5:2,6:2,   // Honky-tonk/Electric Piano 1&2 → Electric Piano
+  7:3,           // Harpsichord → Organ
+  8:17,9:17,     // Clavi/Celesta → Music Box
+  10:16,12:16,15:16, // Glockenspiel/Vibraphone/Tubular Bells → Vibraphone
+  11:17,         // Music Box → Music Box
+  13:19,14:19,16:19, // Marimba/Xylophone/Dulcimer → Marimba
+  17:3,18:3,19:3,20:3,21:3,22:3,23:3,24:3, // Organs → Organ
+  25:4,26:4,     // Acoustic Guitar → Guitar
+  27:5,28:5,29:5,30:5,31:5, // Electric Guitar
+  32:7,          // Guitar Harmonics → Pizzicato
+  33:6,34:6,35:6,36:6,37:6,38:6,39:6,40:6, // Bass
+  41:8,          // Violin → Cello
+  42:8,          // Viola → Cello
+  43:8,44:8,45:8, // Cello/Contrabass/Tremolo Strings → Cello
+  46:7,          // Pizzicato Strings → Pizzicato
+  47:4,          // Orchestral Harp → Guitar
+  48:19,         // Timpani → Marimba
+  49:8,50:8,51:8,52:8, // String Ensembles → Cello
+  53:15,54:15,55:15, // Choir/Voice → Choir
+  56:9,          // Orchestra Hit → Trombone
+  57:9,58:9,59:9,60:9,61:9,62:9,63:9,64:9, // Brass → Trombone
+  65:11,66:11,67:11,68:11, // Saxophones → Saxophone
+  69:10,         // Oboe → Clarinet
+  70:13,71:13,   // English Horn/Bassoon → Bassoon
+  72:10,         // Clarinet → Clarinet
+  73:12,74:12,75:12,76:12,77:12,78:12,79:12,80:12, // Pipes → Flute
+  81:20,82:20,83:20,84:20,85:20,86:20,87:20,88:20, // Synth Lead
+  89:21,90:21,91:21,92:21,93:21,94:21,95:21,96:21, // Synth Pad
+  105:4,106:4,107:4, // Banjo/Shamisen/Koto → Guitar
+  108:16,        // Kalimba → Vibraphone
+  109:3,         // Bag Pipe → Organ
+  110:8,         // Fiddle → Cello
+  111:13,        // Shanai → Bassoon
+  112:18,114:18, // Tinkle Bell/Steel Drums → Steel Drum
+  115:19         // Woodblock → Marimba
+};
+
+// Fallback by MIDI track name keywords → instrument number
+const NAME_KEYWORDS = [
+  ["piano",1],["electric piano",2],["organ",3],
+  ["guitar",4],["bass",6],["cello",8],["violin",8],
+  ["viola",8],["string",8],["pizzicato",7],
+  ["trombone",9],["trumpet",9],["horn",9],["brass",9],
+  ["clarinet",10],["saxophone",11],["sax",11],
+  ["flute",12],["bassoon",13],["oboe",13],
+  ["choir",15],["voice",15],["vocal",15],
+  ["vibraphone",16],["music box",17],
+  ["steel drum",18],["marimba",19],
+  ["synth lead",20],["synth pad",21],["synth",20]
+];
+
+
+// General MIDI percussion note (35-81) → your drum instrument number
+// A=Snare, B=Bass Drum, C=Side Stick, D=Crash Cymbal, E=Open Hi-Hat,
+// F=Closed Hi-Hat, G=Tambourine, H=Hand Clap, I=Claves, J=Woodblock,
+// K=Cowbell, L=Triangle, M=Bongo, N=Conga, O=Cabasa, P=Guiro, Q=Vibraslap, R=Cuica
+const MIDI_DRUM_MAP = {
+  35:"B",  // Acoustic Bass Drum → Bass Drum
+  36:"B",  // Bass Drum 1 → Bass Drum
+  37:"C",  // Side Stick → Side Stick
+  38:"A",  // Acoustic Snare → Snare Drum
+  39:"H",  // Hand Clap → Hand Clap
+  40:"A",  // Electric Snare → Snare Drum
+  41:"N",  // Low Floor Tom → Conga
+  42:"F",  // Closed Hi-Hat → Closed Hi-Hat
+  43:"N",  // High Floor Tom → Conga
+  44:"F",  // Pedal Hi-Hat → Closed Hi-Hat
+  45:"N",  // Low Tom → Conga
+  46:"E",  // Open Hi-Hat → Open Hi-Hat
+  47:"N",  // Low-Mid Tom → Conga
+  48:"N",  // Hi-Mid Tom → Conga
+  49:"D",  // Crash Cymbal 1 → Crash Cymbal
+  50:"N",  // High Tom → Conga
+  51:"F",  // Ride Cymbal 1 → Closed Hi-Hat
+  52:"D",  // Chinese Cymbal → Crash Cymbal
+  53:"K",  // Ride Bell → Cowbell
+  54:"G",  // Tambourine → Tambourine
+  55:"D",  // Splash Cymbal → Crash Cymbal
+  56:"K",  // Cowbell → Cowbell
+  57:"D",  // Crash Cymbal 2 → Crash Cymbal
+  58:"Q",  // Vibraslap → Vibraslap
+  59:"F",  // Ride Cymbal 2 → Closed Hi-Hat
+  60:"M",  // Hi Bongo → Bongo
+  61:"M",  // Low Bongo → Bongo
+  62:"N",  // Mute Hi Conga → Conga
+  63:"N",  // Open Hi Conga → Conga
+  64:"N",  // Low Conga → Conga
+  65:"J",  // High Timbale → Woodblock
+  66:"J",  // Low Timbale → Woodblock
+  67:"M",  // High Agogo → Bongo
+  68:"M",  // Low Agogo → Bongo
+  69:"O",  // Cabasa → Cabasa
+  70:"G",  // Maracas → Tambourine
+  71:"P",  // Short Whistle → Guiro
+  72:"P",  // Long Whistle → Guiro
+  73:"P",  // Short Guiro → Guiro
+  74:"P",  // Long Guiro → Guiro
+  75:"I",  // Claves → Claves
+  76:"J",  // Hi Wood Block → Woodblock
+  77:"J",  // Low Wood Block → Woodblock
+  78:"R",  // Mute Cuica → Cuica
+  79:"R",  // Open Cuica → Cuica
+  80:"L",  // Mute Triangle → Triangle
+  81:"L"   // Open Triangle → Triangle
+};
+
+function drumNoteToInstrument(midiNote) {
+  return MIDI_DRUM_MAP[midiNote] || "A"; // default to Snare if unknown
+}
+
+function guessInstrumentLetter(track) {
+  const prog = track.instrument?.number; // 0-indexed GM program
+  if (prog != null) {
+    const num = MIDI_PROGRAM_MAP[prog + 1];
+    if (num) return INST_LETTER[num] || "A";
+  }
+  const trackName = (track.name || "").toLowerCase();
+  for (const [kw, num] of NAME_KEYWORDS) {
+    if (trackName.includes(kw)) return INST_LETTER[num] || "A";
+  }
+  return "A"; // default → Piano
+}
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let notesContent = "";
+let instrumentsContent = "";
+let drumLettersContent = "";
+let drumTimesContent = "";
+
+// ── Drag visual ───────────────────────────────────────────────────────────────
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+dz.addEventListener('drop', () => dz.classList.remove('over'));
+
+document.getElementById('midiInput').addEventListener('change', function() {
+  const f = this.files[0];
+  if (!f) return;
+  document.getElementById('fileName').textContent = f.name;
+  document.getElementById('convertBtn').disabled = false;
+  setStatus(null, `Ready: ${f.name}`);
+});
+
+// ── Convert ───────────────────────────────────────────────────────────────────
+function convert() {
+  const file = document.getElementById('midiInput').files[0];
+  if (!file) return;
+  setStatus(null, 'Converting…');
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const midi = new Midi(e.target.result);
+
+      // Collect notes with their instrument
+      const allNotes = [];
+      const drumNotes = [];
+      midi.tracks.forEach(track => {
+        // Collect drum tracks (MIDI channel 10)
+        if (track.channel === 9 || track.instrument?.percussion) {
+          track.notes.forEach(note => {
+            drumNotes.push({
+              instrLetter: drumNoteToInstrument(note.midi),
+              start: note.time + 5
+            });
+          });
+          return;
+        }
+        const instrument = guessInstrumentLetter(track);
+        track.notes.forEach(note => {
+          allNotes.push({
+            midi: note.midi,
+            start: note.time + 5,
+            end: note.time + note.duration + 5,
+            instrument
+          });
+        });
+      });
+
+      // Sort chronologically
+      allNotes.sort((a, b) => a.start - b.start);
+      drumNotes.sort((a, b) => a.start - b.start);
+
+      // Compress long pauses: only when ALL tracks are silent together for > 16 beats
+      const bpm = midi.header.tempos[0]?.bpm || 120;
+      const beatLen = 60 / bpm;
+      const maxPause = 16 * beatLen;
+      const targetPause = 4 * beatLen;
+
+      // Merge all events into one timeline to find global silences
+      const allEvents = [
+        ...allNotes.map(n => ({ start: n.start, end: n.end })),
+        ...drumNotes.map(n => ({ start: n.start, end: n.start + beatLen })) // drums are instant
+      ].sort((a, b) => a.start - b.start);
+
+      // Find silence windows where every track is quiet
+      // Walk through merged events, tracking the furthest end time seen so far
+      const silenceWindows = []; // [{from, to, reduction}]
+      let furthestEnd = 0;
+      for (let i = 0; i < allEvents.length; i++) {
+        if (allEvents[i].start > furthestEnd + maxPause) {
+          // Global silence from furthestEnd to allEvents[i].start
+          const gap = allEvents[i].start - furthestEnd;
+          silenceWindows.push({ from: furthestEnd, reduction: gap - targetPause });
+        }
+        furthestEnd = Math.max(furthestEnd, allEvents[i].end);
+      }
+
+      // Apply reductions: shift any event that starts after a silence window
+      function applyShifts(events) {
+        for (const ev of events) {
+          let totalShift = 0;
+          for (const w of silenceWindows) {
+            if (ev.start > w.from) totalShift += w.reduction;
+          }
+          ev.start -= totalShift;
+          if (ev.end != null) ev.end -= totalShift;
+        }
+      }
+
+      applyShifts(allNotes);
+      applyShifts(drumNotes);
+
+      // Build the two files
+      // notes.txt — original NBP format: noteNum / startTime / endTime
+      notesContent = allNotes
+        .map(n => `${n.midi}\n${n.start.toFixed(2)}\n${n.end.toFixed(2)}`)
+        .join('\n') + '\n';
+
+      // instruments.txt — one instrument letter per note (A=Piano, B=Electric Piano, etc.)
+      instrumentsContent = allNotes
+        .map(n => n.instrument)
+        .join('\n') + '\n';
+
+      drumLettersContent = drumNotes.map(n => n.instrLetter).join('\n') + '\n';
+      drumTimesContent   = drumNotes.map(n => n.start.toFixed(2)).join('\n') + '\n';
+
+      document.getElementById('dlNotes').disabled = false;
+      document.getElementById('dlInstruments').disabled = false;
+      document.getElementById('dlDrumLetters').disabled = false;
+      document.getElementById('dlDrumTimes').disabled = false;
+      setStatus(true, `Done — ${allNotes.length} notes, ${drumNotes.length} drum hits`);
+
+    } catch(err) {
+      setStatus(false, 'Error: ' + err.message);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function download(which) {
+  const map = {
+    notes:        [notesContent,       'notes.txt'],
+    instruments:  [instrumentsContent, 'instruments.txt'],
+    drumLetters:  [drumLettersContent, 'drum_letters.txt'],
+    drumTimes:    [drumTimesContent,   'drum_times.txt'],
+  };
+  const [content, filename] = map[which] || ['', 'output.txt'];
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([content], {type:'text/plain'}));
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function setStatus(ok, msg) {
+  document.getElementById('dot').className = 'dot' + (ok === null ? '' : ok ? ' ok' : ' err');
+  document.getElementById('statusMsg').textContent = msg;
+}
+</script>
+</body>
+</html>
